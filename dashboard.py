@@ -1,75 +1,97 @@
 import streamlit as st
 import pandas as pd
-import os
+import numpy as np
 
-# Use st.cache_data (if you're using Streamlit 1.18+). Otherwise, use st.cache.
-@st.cache_data
-def load_data(filename: str):
-    """
-    Load a CSV file from the simulation/data directory.
-    """
-    # Get the absolute path to the folder where dashboard.py is located
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    
-    # Construct the full path to the CSV file
-    data_file_path = os.path.join(current_dir, "simulation", "data", filename)
-    
-    # Read the CSV into a DataFrame
-    df = pd.read_csv(data_file_path)
-    return df
+# ==============================
+# SIMULATED DATA SETUP
+# ==============================
+np.random.seed(42)
+# Create 200 hourly records for more data variation
+dates = pd.date_range(start='2025-04-01', periods=200, freq='H')
+data = {
+    'timestamp': dates,
+    'machine': np.random.choice(['Machine A', 'Machine B', 'Machine C'], size=len(dates)),
+    'event': np.random.choice(['production', 'breakdown', 'maintenance'], size=len(dates)),
+    'temperature': np.random.uniform(60, 100, size=len(dates)),
+    'vibration': np.random.uniform(0.1, 1.0, size=len(dates))
+}
+df = pd.DataFrame(data)
+df['timestamp'] = pd.to_datetime(df['timestamp'])
 
-def main():
-    st.title("Simulation Log Dashboard")
+# ==============================
+# DASHBOARD TITLE
+# ==============================
+st.title("Enhanced Simulation Dashboard")
 
-    # Let user pick which CSV file to view
-    st.sidebar.header("Select Log File")
-    csv_files = ["simulation_log.csv", "simulation_log1.csv"]  # Add more if needed
-    selected_csv = st.sidebar.selectbox("Log File", csv_files)
+# ==============================
+# SIDEBAR FILTERS
+# ==============================
+st.sidebar.header("Filter Options")
 
-    # Load the selected data
-    data = load_data(selected_csv)
+# Filter 1: Date Range Filter
+min_date = df['timestamp'].min().date()
+max_date = df['timestamp'].max().date()
+start_date, end_date = st.sidebar.date_input("Select Date Range", [min_date, max_date])
+if start_date and end_date:
+    df = df[(df['timestamp'].dt.date >= start_date) & (df['timestamp'].dt.date <= end_date)]
 
-    # --- SIDEBAR FILTERS ---
-    st.sidebar.header("Filter Logs")
+# Filter 2: Event Type Filter
+available_events = df['event'].unique()
+selected_events = st.sidebar.multiselect("Select Event Type(s)", options=available_events, default=list(available_events))
+df = df[df['event'].isin(selected_events)]
 
-    # Example filters based on assumed columns: 'machine' and 'event'
-    if "machine" in data.columns:
-        machines = data["machine"].dropna().unique().tolist()
-        selected_machines = st.sidebar.multiselect("Select Machines", machines, default=machines)
-    else:
-        selected_machines = None
+# Filter 3: Temperature Range Filter
+min_temp = float(df['temperature'].min())
+max_temp = float(df['temperature'].max())
+temp_range = st.sidebar.slider("Select Temperature Range", min_temp, max_temp, (min_temp, max_temp))
+df = df[(df['temperature'] >= temp_range[0]) & (df['temperature'] <= temp_range[1])]
 
-    if "event" in data.columns:
-        events = data["event"].dropna().unique().tolist()
-        selected_events = st.sidebar.multiselect("Select Events", events, default=events)
-    else:
-        selected_events = None
+# Additional Filter 4: Vibration Range Filter
+min_vib = float(df['vibration'].min())
+max_vib = float(df['vibration'].max())
+vib_range = st.sidebar.slider("Select Vibration Range", min_vib, max_vib, (min_vib, max_vib))
+df = df[(df['vibration'] >= vib_range[0]) & (df['vibration'] <= vib_range[1])]
 
-    # Apply filters (only if columns exist)
-    filtered_data = data.copy()
-    if selected_machines is not None:
-        filtered_data = filtered_data[filtered_data["machine"].isin(selected_machines)]
-    if selected_events is not None:
-        filtered_data = filtered_data[filtered_data["event"].isin(selected_events)]
+# Additional Filter 5: Machine Selection Filter
+available_machines = df['machine'].unique()
+selected_machines = st.sidebar.multiselect("Select Machine(s)", options=available_machines, default=list(available_machines))
+df = df[df['machine'].isin(selected_machines)]
 
-    # --- TABS FOR TABLE VIEW & CHART VIEW ---
-    tab1, tab2 = st.tabs(["Table View", "Chart View"])
+# ==============================
+# MAIN DASHBOARD CONTENT
+# ==============================
+st.subheader("Filtered Data")
+st.write(df)
 
-    with tab1:
-        st.subheader("Filtered Log Data")
-        st.dataframe(filtered_data)
+# ----- KEY METRICS -----
+st.subheader("Key Metrics")
+col1, col2, col3 = st.columns(3)
+col1.metric("Total Events", len(df))
+col2.metric("Avg Temperature", f"{df['temperature'].mean():.1f}")
+col3.metric("Avg Vibration", f"{df['vibration'].mean():.2f}")
 
-    with tab2:
-        st.subheader("Event Counts by Machine")
-        if "machine" in filtered_data.columns and "event" in filtered_data.columns:
-            event_counts = filtered_data.groupby(["machine", "event"]).size().reset_index(name="count")
-            pivot_table = event_counts.pivot(index="machine", columns="event", values="count").fillna(0)
-            st.bar_chart(pivot_table)
-        else:
-            st.write("No 'machine' or 'event' column found in the data to chart.")
+# ----- CHARTS -----
 
-    st.markdown("### Additional Features")
-    st.write("You can add more widgets, like date-range filters or keyword searches, to further refine your logs.")
+# Chart 1: Temperature over Time
+st.subheader("Temperature over Time")
+temp_chart = df.set_index('timestamp')['temperature']
+st.line_chart(temp_chart)
 
-if __name__ == "__main__":
-    main()
+# Chart 2: Vibration over Time
+st.subheader("Vibration over Time")
+vib_chart = df.set_index('timestamp')['vibration']
+st.line_chart(vib_chart)
+
+# Chart 3: Event Count per Machine
+st.subheader("Event Count per Machine")
+event_counts = df.groupby('machine')['event'].count().reset_index(name='count')
+st.bar_chart(event_counts.set_index('machine'))
+
+# Chart 4: Event Type Distribution
+st.subheader("Event Type Distribution")
+event_distribution = df['event'].value_counts().reset_index()
+event_distribution.columns = ['event', 'count']
+st.bar_chart(event_distribution.set_index('event'))
+
+# Optional: You can also add more visualizations, such as scatter plots or pie charts,
+# depending on what insights you want to extract from the simulation data.

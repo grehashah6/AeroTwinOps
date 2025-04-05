@@ -1,58 +1,75 @@
 import streamlit as st
-import numpy as np
 import pandas as pd
-from streamlit_option_menu import option_menu
+import os
 
-# Add a horizontal navigation menu at the top
-selected = option_menu(
-    menu_title=None,  # no title for a cleaner look
-    options=["Dashboard", "Analytics", "Settings"],
-    icons=["speedometer", "bar-chart-line", "gear"],
-    menu_icon="cast",
-    default_index=0,
-    orientation="horizontal",
-)
+# Use st.cache_data (if you're using Streamlit 1.18+). Otherwise, use st.cache.
+@st.cache_data
+def load_data(filename: str):
+    """
+    Load a CSV file from the simulation/data directory.
+    """
+    # Get the absolute path to the folder where dashboard.py is located
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # Construct the full path to the CSV file
+    data_file_path = os.path.join(current_dir, "simulation", "data", filename)
+    
+    # Read the CSV into a DataFrame
+    df = pd.read_csv(data_file_path)
+    return df
 
-# Display different content based on the selected menu option
-if selected == "Dashboard":
-    # Title and Description
-    st.title("AeroTwinOps Dashboard")
-    st.write("Real-time monitoring of the simulated aerospace factory process.")
+def main():
+    st.title("Simulation Log Dashboard")
 
-    kpi_data = {
-        "Production Throughput": np.random.randint(80, 120),
-        "Machine Uptime (%)": np.random.randint(90, 100),
-        "Failures Count": np.random.randint(0, 5)
-    }
+    # Let user pick which CSV file to view
+    st.sidebar.header("Select Log File")
+    csv_files = ["simulation_log.csv", "simulation_log1.csv"]  # Add more if needed
+    selected_csv = st.sidebar.selectbox("Log File", csv_files)
 
-    # Create three columns for displaying KPIs
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Throughput", kpi_data["Production Throughput"])
-    col2.metric("Uptime (%)", kpi_data["Machine Uptime (%)"])
-    col3.metric("Failures", kpi_data["Failures Count"])
+    # Load the selected data
+    data = load_data(selected_csv)
 
-    # Generate dummy time-series data for visualization
-    time_series = pd.DataFrame({
-        "Time": pd.date_range(start=pd.Timestamp.now(), periods=20, freq="T"),
-        "Throughput": np.random.randint(80, 120, 20)
-    })
+    # --- SIDEBAR FILTERS ---
+    st.sidebar.header("Filter Logs")
 
-    # Display the line chart
-    st.line_chart(time_series.set_index("Time"))
+    # Example filters based on assumed columns: 'machine' and 'event'
+    if "machine" in data.columns:
+        machines = data["machine"].dropna().unique().tolist()
+        selected_machines = st.sidebar.multiselect("Select Machines", machines, default=machines)
+    else:
+        selected_machines = None
 
-    # Scenario Controls in Sidebar
-    st.sidebar.header("Scenario Controls")
-    production_speed = st.sidebar.slider("Production Speed", 50, 150, 100)
-    maintenance_interval = st.sidebar.selectbox("Maintenance Interval (mins)", [30, 60, 90])
+    if "event" in data.columns:
+        events = data["event"].dropna().unique().tolist()
+        selected_events = st.sidebar.multiselect("Select Events", events, default=events)
+    else:
+        selected_events = None
 
-    # # Refresh Button to simulate data updates
-    # if st.button("Refresh Data"):
-    #     st.experimental_rerun()
+    # Apply filters (only if columns exist)
+    filtered_data = data.copy()
+    if selected_machines is not None:
+        filtered_data = filtered_data[filtered_data["machine"].isin(selected_machines)]
+    if selected_events is not None:
+        filtered_data = filtered_data[filtered_data["event"].isin(selected_events)]
 
-elif selected == "Analytics":
-    st.title("Analytics")
-    st.write("Analytics content goes here.")
+    # --- TABS FOR TABLE VIEW & CHART VIEW ---
+    tab1, tab2 = st.tabs(["Table View", "Chart View"])
 
-elif selected == "Settings":
-    st.title("Settings")
-    st.write("Settings content goes here.")
+    with tab1:
+        st.subheader("Filtered Log Data")
+        st.dataframe(filtered_data)
+
+    with tab2:
+        st.subheader("Event Counts by Machine")
+        if "machine" in filtered_data.columns and "event" in filtered_data.columns:
+            event_counts = filtered_data.groupby(["machine", "event"]).size().reset_index(name="count")
+            pivot_table = event_counts.pivot(index="machine", columns="event", values="count").fillna(0)
+            st.bar_chart(pivot_table)
+        else:
+            st.write("No 'machine' or 'event' column found in the data to chart.")
+
+    st.markdown("### Additional Features")
+    st.write("You can add more widgets, like date-range filters or keyword searches, to further refine your logs.")
+
+if __name__ == "__main__":
+    main()

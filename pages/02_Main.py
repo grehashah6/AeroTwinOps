@@ -4,7 +4,11 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import os 
-from AeroTwinOps.utils import (
+import sys
+parent_dir =os.path.abspath(os.path.join(os.path.dirname(__file__),'..'))
+sys.path.insert(0,parent_dir)
+
+from utils import (
     load_scenario1_data,
     load_scenario2_data,
     load_scenario3_data,

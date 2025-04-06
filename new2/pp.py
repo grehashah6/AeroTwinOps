@@ -1,9 +1,7 @@
-import threading, time, random, hashlib, json, math, os, csv
+import threading, time, random, hashlib, json, math
 from collections import deque
 from statistics import median
 from flask import Flask, jsonify, request, render_template_string
-import pandas as pd
-import joblib
 
 app = Flask(__name__)
 
@@ -42,7 +40,7 @@ class Blockchain:
         )
         self.chain.append(new_block)
 
-# Global blockchain instance
+# Global blockchain instance for anomaly logging
 blockchain = Blockchain()
 
 # -------------------------
@@ -61,87 +59,48 @@ def robust_zscore(x, data):
     return 0.6745 * (x - med) / mad
 
 # -------------------------
-# Dynamic Feature Engineering Function
-# -------------------------
-def get_engineered_data():
-    try:
-        data = pd.read_csv("scenario_data.csv")
-    except Exception as e:
-        print("Error reading scenario_data.csv:", e)
-        return []
-    
-    if data.empty:
-        return []
-    
-    # Compute derived features dynamically
-    data['efficiency_score'] = data['throughput'] / data['energy_consumption'] * 100
-    data['avg_temperature'] = (data['avg_T_in'] + data['avg_T_out']) / 2
-    data['temp_diff'] = data['avg_T_out'] - data['avg_T_in']
-    data['cv_T_in'] = data['std_T_in'] / data['avg_T_in']
-    data['cv_T_out'] = data['std_T_out'] / data['avg_T_out']
-    
-    engineered_data = data.to_dict(orient="records")
-    return engineered_data
-
-# -------------------------
-# Sensor Data & Enhanced Anomaly Detection
+# Sensor Data & Enhanced Anomaly Detection for a Honeywell Compressor
 # -------------------------
 sensor_data = {}
-sensor_history = deque(maxlen=50)
+sensor_history = deque(maxlen=50)  # store last 50 readings
 
-machine_baselines = {
-    "machine_1": { 
-        "T_in": (25, 5),
-        "T_out": (400, 30),
-        "RPM": (20000, 1000),
-        "Vibration": (0.3, 0.1),
-        "PressureRatio": (12, 1)
-    },
-    "machine_2": { 
-        "T_in": (26, 4),
-        "T_out": (395, 25),
-        "RPM": (19800, 900),
-        "Vibration": (0.28, 0.08),
-        "PressureRatio": (11.8, 1)
-    },
-    "machine_3": { 
-        "T_in": (24, 6),
-        "T_out": (405, 35),
-        "RPM": (20100, 1100),
-        "Vibration": (0.32, 0.12),
-        "PressureRatio": (12.2, 1)
-    }
+# Representative baseline values for a Honeywell compressor (TFE731-like)
+baseline = {
+    "T_in": {"mean": 25, "std": 5},            # Inlet Temperature in °C
+    "T_out": {"mean": 400, "std": 30},           # Outlet Temperature in °C
+    "RPM": {"mean": 20000, "std": 1000},         # Rotor Speed in RPM
+    "Vibration": {"mean": 0.3, "std": 0.1},        # Vibration in mm/s
+    "PressureRatio": {"mean": 12, "std": 1},       # Pressure Ratio (outlet/inlet)
 }
-
-machine_sensor_history = { machine: deque(maxlen=50) for machine in machine_baselines }
-
 PR_surge = 10.0
-surge_threshold = 15.0
-robust_threshold = 3.5
+surge_threshold = 15.0  # Safe surge margin in percentage
+robust_threshold = 3.5  # Robust z-score threshold
 
+# Recommendation Engine: Generate actionable feedback based on detected anomalies.
 def get_recommendation(reading, anomalies):
     recommendations = []
     if "T_out" in anomalies:
-        recommendations.append("High outlet temperature detected. Consider enhancing cooling system.")
+        recommendations.append("High outlet temperature detected. Consider enhancing the cooling system (e.g., adjusting cooling fins or increasing coolant flow).")
     if "SurgeMargin" in anomalies:
-        recommendations.append("Low surge margin detected. Consider revising compressor design.")
+        recommendations.append("Low surge margin detected. Consider revising compressor design or operating parameters (e.g., reducing RPM or adjusting blade geometry) to improve stability.")
     if "RPM" in anomalies:
-        recommendations.append("High rotor speed detected. Evaluate operating conditions.")
+        recommendations.append("High rotor speed detected. Evaluate operating conditions to reduce mechanical stress.")
     if "Vibration" in anomalies:
-        recommendations.append("Excessive vibration detected. Inspect for blade imbalances.")
+        recommendations.append("Excessive vibration detected. Inspect for blade imbalances or misalignment.")
     if "PressureRatio" in anomalies:
-        recommendations.append("Abnormal pressure ratio detected. Consider modifying design parameters.")
+        recommendations.append("Abnormal pressure ratio detected. Consider modifying design parameters to ensure proper compression efficiency.")
     if "T_in" in anomalies:
-        recommendations.append("Inlet temperature deviation detected. Verify ambient conditions.")
+        recommendations.append("Inlet temperature deviation detected. Verify ambient conditions are within acceptable limits.")
     return " ".join(recommendations) if recommendations else "No recommendations; parameters within nominal range."
 
-def generate_sensor_data(machine_id, baseline):
+def generate_sensor_data():
+    global sensor_data, sensor_history
     while True:
-        T_in = random.gauss(baseline["T_in"][0], baseline["T_in"][1])
-        T_out = random.gauss(baseline["T_out"][0], baseline["T_out"][1])
-        RPM = random.gauss(baseline["RPM"][0], baseline["RPM"][1])
-        Vibration = random.gauss(baseline["Vibration"][0], baseline["Vibration"][1])
-        PressureRatio = random.gauss(baseline["PressureRatio"][0], baseline["PressureRatio"][1])
+        T_in = random.gauss(baseline["T_in"]["mean"], baseline["T_in"]["std"])
+        T_out = random.gauss(baseline["T_out"]["mean"], baseline["T_out"]["std"])
+        RPM = random.gauss(baseline["RPM"]["mean"], baseline["RPM"]["std"])
+        Vibration = random.gauss(baseline["Vibration"]["mean"], baseline["Vibration"]["std"])
+        PressureRatio = random.gauss(baseline["PressureRatio"]["mean"], baseline["PressureRatio"]["std"])
         surge_margin = ((PressureRatio - PR_surge) / PressureRatio * 100) if PressureRatio else 0
         
         new_reading = {
@@ -153,16 +112,16 @@ def generate_sensor_data(machine_id, baseline):
             "SurgeMargin": round(surge_margin, 2),
             "timestamp": time.time()
         }
-        machine_sensor_history[machine_id].append(new_reading)
+        sensor_data = new_reading
+        sensor_history.append(new_reading)
         
         anomaly = {}
-        if len(machine_sensor_history[machine_id]) >= 5:
-            history = machine_sensor_history[machine_id]
-            T_in_list = [d["T_in"] for d in history]
-            T_out_list = [d["T_out"] for d in history]
-            RPM_list = [d["RPM"] for d in history]
-            Vib_list = [d["Vibration"] for d in history]
-            PR_list = [d["PressureRatio"] for d in history]
+        if len(sensor_history) >= 5:
+            T_in_list = [d["T_in"] for d in sensor_history]
+            T_out_list = [d["T_out"] for d in sensor_history]
+            RPM_list = [d["RPM"] for d in sensor_history]
+            Vib_list = [d["Vibration"] for d in sensor_history]
+            PR_list = [d["PressureRatio"] for d in sensor_history]
             
             rz_T_in = abs(robust_zscore(new_reading["T_in"], T_in_list))
             rz_T_out = abs(robust_zscore(new_reading["T_out"], T_out_list))
@@ -187,48 +146,29 @@ def generate_sensor_data(machine_id, baseline):
         if anomaly:
             recommendation = get_recommendation(new_reading, anomaly)
             anomaly_event = {
-                "machine_id": machine_id,
                 "anomaly": anomaly,
                 "sensor_data": new_reading,
                 "recommendation": recommendation
             }
             blockchain.add_block(anomaly_event)
-            print(f"Anomaly Detected for {machine_id}:", anomaly_event)
+            print("Anomaly Detected:", anomaly_event)
         else:
-            print(f"Normal Reading for {machine_id}:", new_reading)
+            print("Normal Reading:", new_reading)
         
         time.sleep(5)
 
-for machine_id, baseline in machine_baselines.items():
-    t = threading.Thread(target=generate_sensor_data, args=(machine_id, baseline), daemon=True)
-    t.start()
+data_thread = threading.Thread(target=generate_sensor_data, daemon=True)
+data_thread.start()
 
 # -------------------------
-# Periodic CSV Writer
-# -------------------------
-def periodic_csv_writer(interval, machine_history, filename="scenario_data.csv"):
-    from data_collection import aggregate_sensor_data, write_aggregated_data_to_csv
-    while True:
-        aggregated_data = aggregate_sensor_data(machine_history)
-        write_aggregated_data_to_csv(aggregated_data, filename)
-        time.sleep(interval)
-
-csv_writer_thread = threading.Thread(
-    target=periodic_csv_writer, 
-    args=(10, machine_sensor_history, "scenario_data.csv"),
-    daemon=True
-)
-csv_writer_thread.start()
-
-# -------------------------
-# Dashboard Template (Digital Twin & Layout Optimizer)
+# Home Page (Digital Twin Dashboard)
 # -------------------------
 dashboard_template = """
 <!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8">
-    <title>Aerospace Digital Twin Dashboard - Multi-Machine</title>
+    <title>Aerospace Digital Twin Dashboard - Honeywell Compressor</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <!-- Bootstrap CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
@@ -241,29 +181,19 @@ dashboard_template = """
   </head>
   <body>
     <div class="container">
-      <h1 class="mb-4">Aerospace Digital Twin & Anomaly Insight Platform (Multi-Machine)</h1>
-      <!-- Navigation Buttons -->
+      <h1 class="mb-4">Aerospace Digital Twin & Anomaly Insight Platform</h1>
+      <!-- Button to navigate to the Smart Factory Layout Optimizer -->
       <div class="mb-3">
-        <a href="/layout-optimizer" class="btn btn-success">Smart Factory Layout Optimizer</a>
-        <a href="/ml" class="btn btn-primary">AI/ML Analysis</a>
+        <a href="/layout-optimizer" class="btn btn-success">Go to Smart Factory Layout Optimizer</a>
       </div>
-      <p>This dashboard simulates live sensor data for multiple machines during pre-production testing.
-         Anomalies are detected using robust statistics and logged on an immutable blockchain ledger.</p>
-      
-      <!-- Added Machine Selection Dropdown -->
-      <div class="mb-3">
-        <label for="machineSelect" class="form-label">Select Machine:</label>
-        <select id="machineSelect" class="form-select">
-          <option value="all" selected>All Machines</option>
-          <option value="machine_1">Machine 1</option>
-          <option value="machine_2">Machine 2</option>
-          <option value="machine_3">Machine 3</option>
-        </select>
-      </div>
+      <p>This dashboard simulates live sensor data for a Honeywell compressor (e.g., TFE731) during pre-production testing.
+         Key parameters (inlet/outlet temperatures, RPM, vibration, pressure ratio, and surge margin) are monitored using robust statistics.
+         Anomalies are flagged when robust z‑scores exceed 3.5 or when the surge margin is below 15%.
+         For each anomaly, actionable recommendations are provided and logged to an immutable blockchain ledger.</p>
       
       <div class="row">
         <div class="col-md-6">
-          <h3>Live Sensor Data Chart</h3>
+          <h3>Live Sensor Data</h3>
           <canvas id="sensorChart"></canvas>
         </div>
         <div class="col-md-6">
@@ -306,12 +236,11 @@ dashboard_template = """
       </div>
       
       <hr>
-      <h3>Historical Sensor Data (Last 50 Readings, All Machines)</h3>
+      <h3>Historical Sensor Data (Last 50 Readings)</h3>
       <table class="table table-striped">
         <thead>
           <tr>
             <th>Timestamp</th>
-            <th>Machine ID</th>
             <th>T_in (°C)</th>
             <th>T_out (°C)</th>
             <th>RPM</th>
@@ -324,7 +253,6 @@ dashboard_template = """
           {% for reading in sensor_history %}
           <tr>
             <td>{{ reading.timestamp | datetimeformat }}</td>
-            <td>{{ reading.machine_id }}</td>
             <td>{{ reading.T_in }}</td>
             <td>{{ reading.T_out }}</td>
             <td>{{ reading.RPM }}</td>
@@ -402,6 +330,7 @@ dashboard_template = """
           sensorChart.update();
       }
       
+      // Update blockchain ledger UI using Bootstrap Accordion
       async function updateBlockchain() {
           const response = await fetch('/api/blockchain');
           const data = await response.json();
@@ -417,7 +346,6 @@ dashboard_template = """
                   <div id="collapse${block.index}" class="accordion-collapse collapse" aria-labelledby="heading${block.index}" data-bs-parent="#blockchainAccordion">
                     <div class="accordion-body">
                       ${typeof block.data === 'string' ? `<p>${block.data}</p>` : `
-                        <p><strong>Machine ID:</strong> <span>${block.data.machine_id || "N/A"}</span></p>
                         <p><strong>Anomaly:</strong> <span class="text-danger">${JSON.stringify(block.data.anomaly)}</span></p>
                         <p><strong>Sensor Data:</strong>
                           T_in: <em>${block.data.sensor_data.T_in}</em>,
@@ -437,6 +365,7 @@ dashboard_template = """
           document.getElementById("blockchainAccordion").innerHTML = accordionHTML;
       }
       
+      // Update historical sensor data table
       async function updateHistoryTable() {
           const response = await fetch('/api/history');
           const data = await response.json();
@@ -444,7 +373,6 @@ dashboard_template = """
           data.forEach(reading => {
               tableHTML += `<tr>
                               <td>${new Date(reading.timestamp * 1000).toLocaleString()}</td>
-                              <td>${reading.machine_id}</td>
                               <td>${reading.T_in}</td>
                               <td>${reading.T_out}</td>
                               <td>${reading.RPM}</td>
@@ -456,12 +384,14 @@ dashboard_template = """
           document.getElementById("historyTableBody").innerHTML = tableHTML;
       }
       
+      // Auto-update every 10 seconds
       setInterval(() => {
           updateSensorData();
           updateBlockchain();
           updateHistoryTable();
       }, 10000);
       
+      // Initial update
       updateSensorData();
       updateBlockchain();
       updateHistoryTable();
@@ -476,14 +406,6 @@ def datetimeformat(value):
 
 @app.route('/')
 def dashboard():
-    aggregated_history = []
-    for machine_id, history in machine_sensor_history.items():
-        for reading in history:
-            reading_copy = reading.copy()
-            reading_copy["machine_id"] = machine_id
-            aggregated_history.append(reading_copy)
-    aggregated_history.sort(key=lambda x: x["timestamp"])
-    
     chain_data = []
     for block in blockchain.chain:
         chain_data.append({
@@ -493,18 +415,12 @@ def dashboard():
             "previous_hash": block.previous_hash,
             "hash": block.hash
         })
-    return render_template_string(dashboard_template, sensor_history=aggregated_history, blockchain=chain_data)
+    history_list = list(sensor_history)
+    return render_template_string(dashboard_template, sensor_history=history_list, blockchain=chain_data)
 
 @app.route('/api/history')
 def get_history():
-    aggregated_history = []
-    for machine_id, history in machine_sensor_history.items():
-        for reading in history:
-            reading_copy = reading.copy()
-            reading_copy["machine_id"] = machine_id
-            aggregated_history.append(reading_copy)
-    aggregated_history.sort(key=lambda x: x["timestamp"])
-    return jsonify(aggregated_history)
+    return jsonify(list(sensor_history))
 
 @app.route('/api/blockchain')
 def get_blockchain():
@@ -520,290 +436,7 @@ def get_blockchain():
     return jsonify(chain_data)
 
 # -------------------------
-# New AI/ML Analysis UI Page (Dynamic Feature Analysis)
-# -------------------------
-ml_template = """
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>AI/ML Analysis - Factory Performance</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <!-- Bootstrap CSS -->
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-  <!-- Chart.js (for plotting engineered features) -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-</head>
-<body>
-<div class="container my-4">
-  <h1 class="mb-4">AI/ML Analysis for Factory Performance</h1>
-  
-  <!-- Feature Analysis Section -->
-<div class="card mb-4">
-  <div class="card-header">
-    Feature Analysis
-  </div>
-  <div class="card-body">
-    <div id="featureSummary" class="mb-3">
-      <!-- A quick summary of the data set (populated via JS) -->
-    </div>
-    <div class="table-responsive" style="max-height: 300px; overflow-y: auto;">
-      <table id="featureTable" class="table table-sm table-bordered table-hover">
-        <!-- Engineered features will be loaded here via JS -->
-      </table>
-    </div>
-    <!-- Example Chart for Throughput Over Time -->
-    <div class="mt-4">
-      <canvas id="engineeredChart" style="max-height: 400px;"></canvas>
-    </div>
-  </div>
-</div>
-  
-  <!-- Scenario Evaluation Section -->
-  <div class="card">
-    <div class="card-header">
-      Scenario Evaluation
-    </div>
-    <div class="card-body">
-      <form id="scenarioForm">
-        <div class="mb-3">
-          <label for="machine_count" class="form-label">Machine Count</label>
-          <input type="number" class="form-control" id="machine_count" name="machine_count" value="3" required>
-        </div>
-        <div class="row">
-          <div class="col-md-4">
-            <label for="avg_T_in" class="form-label">Average Inlet Temperature (°C)</label>
-            <input type="number" step="0.1" class="form-control" id="avg_T_in" name="avg_T_in" value="25.0" required>
-          </div>
-          <div class="col-md-4">
-            <label for="std_T_in" class="form-label">Std. Inlet Temperature</label>
-            <input type="number" step="0.1" class="form-control" id="std_T_in" name="std_T_in" value="2.0" required>
-          </div>
-          <div class="col-md-4">
-            <label for="avg_T_out" class="form-label">Average Outlet Temperature (°C)</label>
-            <input type="number" step="0.1" class="form-control" id="avg_T_out" name="avg_T_out" value="400.0" required>
-          </div>
-        </div>
-        <div class="row mt-3">
-          <div class="col-md-4">
-            <label for="std_T_out" class="form-label">Std. Outlet Temperature</label>
-            <input type="number" step="0.1" class="form-control" id="std_T_out" name="std_T_out" value="15.0" required>
-          </div>
-          <div class="col-md-4">
-            <label for="avg_RPM" class="form-label">Average RPM</label>
-            <input type="number" class="form-control" id="avg_RPM" name="avg_RPM" value="20000" required>
-          </div>
-          <div class="col-md-4">
-            <label for="std_RPM" class="form-label">Std. RPM</label>
-            <input type="number" class="form-control" id="std_RPM" name="std_RPM" value="500" required>
-          </div>
-        </div>
-        <div class="row mt-3">
-          <div class="col-md-4">
-            <label for="avg_Vibration" class="form-label">Average Vibration</label>
-            <input type="number" step="0.01" class="form-control" id="avg_Vibration" name="avg_Vibration" value="0.3" required>
-          </div>
-          <div class="col-md-4">
-            <label for="std_Vibration" class="form-label">Std. Vibration</label>
-            <input type="number" step="0.01" class="form-control" id="std_Vibration" name="std_Vibration" value="0.05" required>
-          </div>
-          <div class="col-md-4">
-            <label for="cycle_time" class="form-label">Cycle Time (sec)</label>
-            <input type="number" step="0.1" class="form-control" id="cycle_time" name="cycle_time" value="50" required>
-          </div>
-        </div>
-        <div class="row mt-3">
-          <div class="col-md-6">
-            <label for="energy_consumption" class="form-label">Energy Consumption</label>
-            <input type="number" step="0.1" class="form-control" id="energy_consumption" name="energy_consumption" value="20" required>
-          </div>
-          <div class="col-md-6">
-            <label for="estimated_travel_distance" class="form-label">Estimated Travel Distance</label>
-            <input type="number" step="0.1" class="form-control" id="estimated_travel_distance" name="estimated_travel_distance" value="120" required>
-          </div>
-        </div>
-        <button type="submit" class="btn btn-primary mt-4">Predict Performance</button>
-      </form>
-      
-      <div id="predictionResult" class="mt-4"></div>
-    </div>
-  </div>
-</div>
-
-<script>
-// Utility for rounding
-function roundValue(value, decimals=2) {
-  if (isNaN(value)) return value;
-  return parseFloat(value).toFixed(decimals);
-}
-
-let engineeredChart; // We'll store our Chart.js instance here
-
-async function loadFeatureData() {
-    const response = await fetch('/api/engineered');
-    const data = await response.json();
-    
-    // Build a quick summary
-    let totalThroughput = 0;
-    data.forEach(row => {
-      if (row.throughput) {
-        totalThroughput += parseFloat(row.throughput);
-      }
-    });
-    const avgThroughput = data.length > 0 ? (totalThroughput / data.length).toFixed(2) : 0;
-    
-    // Update summary area
-    document.getElementById('featureSummary').innerHTML = 
-      '<p><strong>Total Data Points:</strong> ' + data.length + 
-      ' | <strong>Average Throughput:</strong> ' + avgThroughput + '</p>';
-    
-    // Build the table header
-    let tableHTML = '<thead><tr>';
-    if (data.length > 0) {
-      for(let key in data[0]) {
-        tableHTML += '<th>' + key + '</th>';
-      }
-    } else {
-      tableHTML += '<th>No Data Found</th>';
-    }
-    tableHTML += '</tr></thead><tbody>';
-    
-    // Populate table rows
-    data.forEach(row => {
-      tableHTML += '<tr>';
-      for(let key in row) {
-        // Round numeric fields
-        let cellValue = row[key];
-        if (!isNaN(cellValue)) {
-          cellValue = roundValue(cellValue, 3);
-        }
-        tableHTML += '<td>' + cellValue + '</td>';
-      }
-      tableHTML += '</tr>';
-    });
-    tableHTML += '</tbody>';
-    
-    // Inject into the table
-    document.getElementById('featureTable').innerHTML = tableHTML;
-    
-    // Also update our chart (for example, "Throughput vs. timestamp")
-    // We'll assume 'timestamp' is in seconds, so we can show it as an x-value
-    if (!engineeredChart) {
-      // Create chart for the first time
-      const ctx = document.getElementById('engineeredChart').getContext('2d');
-      engineeredChart = new Chart(ctx, {
-        type: 'line',
-        data: {
-          labels: data.map(d => d.timestamp),  // x-axis
-          datasets: [
-            {
-              label: 'Throughput',
-              data: data.map(d => d.throughput),
-              borderColor: 'blue',
-              fill: false
-            }
-          ]
-        },
-        options: {
-          responsive: true,
-          scales: {
-            x: { 
-              title: { display: true, text: 'Timestamp (sec)' },
-              ticks: {
-                // If you want to format timestamps into readable times, do so here
-                callback: function(value, index, ticks) {
-                  return roundValue(value, 0);
-                }
-              }
-            },
-            y: {
-              title: { display: true, text: 'Throughput (parts/hour)' }
-            }
-          }
-        }
-      });
-    } else {
-      // Update existing chart
-      engineeredChart.data.labels = data.map(d => d.timestamp);
-      engineeredChart.data.datasets[0].data = data.map(d => d.throughput);
-      engineeredChart.update();
-    }
-}
-
-// Initial load and periodic refresh every 10 seconds
-loadFeatureData();
-setInterval(loadFeatureData, 10000);
-
-// Handle scenario evaluation form submission
-document.getElementById('scenarioForm').addEventListener('submit', async function(e) {
-    e.preventDefault();
-    const formData = new FormData(this);
-    let payload = {};
-    formData.forEach((value, key) => {
-        payload[key] = parseFloat(value);
-    });
-    
-    try {
-        const response = await fetch('/predict', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-        if (!response.ok) {
-            throw new Error('Network response was not ok');
-        }
-        const result = await response.json();
-        document.getElementById('predictionResult').innerHTML = 
-            '<div class="alert alert-info"><strong>Predicted Throughput:</strong> ' + result.predicted_throughput + '</div>';
-    } catch (error) {
-        console.error('Error during prediction:', error);
-        document.getElementById('predictionResult').innerHTML = 
-            '<div class="alert alert-danger"><strong>Error:</strong> Could not get prediction.</div>';
-    }
-});
-
-</script>
-</body>
-</html>
-"""
-
-
-@app.route('/ml')
-def ml_ui():
-    return render_template_string(ml_template)
-
-@app.route('/api/engineered')
-def engineered_data_api():
-    engineered_data = get_engineered_data()
-    print("Dynamic engineered data returned:", engineered_data)
-    return jsonify(engineered_data)
-
-@app.route('/predict', methods=["POST"])
-def predict():
-    import pandas as pd
-    try:
-        data_input = request.get_json()
-        feature_order = [
-            "machine_count",
-            "avg_T_in", "std_T_in",
-            "avg_T_out", "std_T_out",
-            "avg_RPM", "std_RPM",
-            "avg_Vibration", "std_Vibration",
-            "cycle_time",
-            "energy_consumption",
-            "estimated_travel_distance"
-        ]
-        input_df = pd.DataFrame([data_input], columns=feature_order)
-        model = joblib.load("throughput_model.pkl")
-        predicted = model.predict(input_df)[0]
-        return jsonify({"predicted_throughput": round(predicted, 2)})
-    except Exception as e:
-        print("Error in /predict:", e)
-        return jsonify({"error": "Prediction failed."}), 500
-
-
-# -------------------------
-# Layout Optimizer & Simulator (Unchanged)
+# Enhanced Smart Factory Layout Optimizer (Unchanged)
 # -------------------------
 layout_optimizer_template = """
 <!doctype html>
@@ -851,7 +484,6 @@ layout_optimizer_template = """
     </div>
     
     <script>
-      // (Layout optimizer JavaScript remains unchanged)
       const width = 800;
       const height = 600;
       const stage = new Konva.Stage({
@@ -1078,6 +710,7 @@ layout_optimizer_template = """
           }
       }
       
+      // Event listeners for palette clicks to add machines
       document.querySelectorAll("#palette .machine").forEach(item => {
           item.addEventListener("click", () => {
               const type = item.getAttribute("data-type");
@@ -1098,18 +731,22 @@ layout_optimizer_template = """
           document.getElementById('results').innerHTML = "";
       });
       
+      // Enable zooming with mouse wheel
       stage.on('wheel', function(e) {
           e.evt.preventDefault();
           var oldScale = stage.scaleX();
           var pointer = stage.getPointerPosition();
+  
           var mousePointTo = {
               x: (pointer.x - stage.x()) / oldScale,
               y: (pointer.y - stage.y()) / oldScale,
           };
+  
           var direction = e.evt.deltaY > 0 ? -1 : 1;
           var factor = 1.05;
           var newScale = direction > 0 ? oldScale * factor : oldScale / factor;
           stage.scale({ x: newScale, y: newScale });
+  
           var newPos = {
               x: pointer.x - mousePointTo.x * newScale,
               y: pointer.y - mousePointTo.y * newScale,
@@ -1122,19 +759,21 @@ layout_optimizer_template = """
 </html>
 """
 
-@app.template_filter('datetimeformat')
-def datetimeformat(value):
-    return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(value))
-
 @app.route('/layout-optimizer')
 def layout_optimizer():
     return render_template_string(layout_optimizer_template)
 
-@app.route('/simulateLayout', methods=["POST"])
-def simulate_layout_route():
-    machines_input = request.get_json()
-    result = simulate_layout_api(machines_input)
-    return jsonify(result)
+# -------------------------
+# Layout Simulator API Endpoint (Python Simulation)
+# -------------------------
+machine_specs = {
+    "3D Printer": {"processing_time": 300, "power": 5},
+    "CNC": {"processing_time": 180, "power": 10},
+    "Assembly Robot": {"processing_time": 120, "power": 2},
+    "Quality Scanner": {"processing_time": 60, "power": 1}
+}
+transport_speed = 1
+transport_energy_rate = 0.1
 
 def simulate_layout_api(machines_input):
     order = ["3D Printer", "CNC", "Assembly Robot", "Quality Scanner"]
@@ -1153,8 +792,6 @@ def simulate_layout_api(machines_input):
         dy = sequence[i+1]["y"] - sequence[i]["y"]
         dist = math.sqrt(dx*dx + dy*dy)
         total_distance += dist
-    transport_speed = 1
-    transport_energy_rate = 0.1
     travel_time = total_distance / transport_speed if transport_speed else 0
     cycle_time = total_processing + travel_time
     throughput = 3600 / cycle_time if cycle_time else 0
@@ -1174,6 +811,12 @@ def simulate_layout_api(machines_input):
         "ideal_energy": round(ideal_energy, 2),
         "layout_score": round(score, 2)
     }
+
+@app.route('/simulateLayout', methods=["POST"])
+def simulate_layout_route():
+    machines_input = request.get_json()
+    result = simulate_layout_api(machines_input)
+    return jsonify(result)
 
 if __name__ == '__main__':
     app.run(debug=True)
